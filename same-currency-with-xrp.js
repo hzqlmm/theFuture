@@ -1,9 +1,11 @@
 var util = require('util');
 var _ = require('underscore');
+
+var EventEmitter = require('events').EventEmitter;
+
 var config = require('./config.js');
 var account = config.account;
 var secret = config.secret;
-var EventEmitter = require('events').EventEmitter;
 
 var drops = 1000000;
 var maxAmountAllowed = 100 * drops;
@@ -11,6 +13,10 @@ var maxAmountAllowed = 100 * drops;
 function Market(remote, issuer, currency, name) {
     EventEmitter.call(this);
     var self = this;
+
+    this._index = 0;
+
+    this._remote = remote;
 
     this._name = name;
     this._issuer = issuer;
@@ -29,45 +35,68 @@ function Market(remote, issuer, currency, name) {
     this._markets = [];
 
     this._buyXrpBook.on('model', function(offers) {
+        self.log(false, self._name + ' buy price change index:' + self._index++);
+
         var cheapestOne = offers[0];
 
+        var priceIBuy;
         if (cheapestOne.quality == undefined) {
-            self._priceIBuy = (cheapestOne.TakerPays.value / cheapestOne.TakerGets) * drops;
+            priceIBuy = (cheapestOne.TakerPays.value / cheapestOne.TakerGets) * drops;
         } else {
-            self._priceIBuy = cheapestOne.quality * drops;
+            priceIBuy = cheapestOne.quality * drops;
         }
 
-        self._amountIBuy = cheapestOne.TakerGets;
+        if (self._priceIBuy != 0 && priceIBuy == self._priceIBuy) {
+            return;
+        }
 
+        self._priceIBuy = priceIBuy;
+        self._amountIBuy = cheapestOne.TakerGets;
         if (cheapestOne.hasOwnProperty('taker_gets_funded')) {
             self._amountIBuy = cheapestOne.taker_gets_funded;
         }
 
         var market = {
+            _name: self._name,
             _issuer: self._issuer,
             _currency: self._currency,
             _priceIBuy: self._priceIBuy,
             _amountIBuy: self._amountIBuy
         }
+
+        self.log(false, market);
+
         self.emit(self._name + '-buy-price-change', market);
     });
 
     this._sellXrpBook.on('model', function(offers) {
+        self.log(false, self._name + ' sell price change index:' + self._index++);
+
         var highestOffer = offers[0];
 
-        self._priceISell = (highestOffer.TakerGets.value / highestOffer.TakerPays) * drops;
+        var priceISell = (highestOffer.TakerGets.value / highestOffer.TakerPays) * drops;
+
+        if (self._priceISell != 0 && priceISell == self._priceISell) {
+            return;
+        }
+
+        self._priceISell = priceISell;
         self._amountISell = highestOffer.TakerPays;
 
-        if (highestOffer.hasOwnProperty('taker_gets_funded')) {
+        if (highestOffer.hasOwnProperty('taker_pays_funded')) {
             self._amountISell = highestOffer.taker_pays_funded;
         }
 
         var market = {
+            _name: self._name,
             _issuer: self._issuer,
             _currency: self._currency,
             _priceISell: self._priceISell,
             _amountISell: self._amountISell
         }
+
+        self.log(false, market);
+
         self.emit(this._name + '-sell-price-change', market);
     });
 }
@@ -76,31 +105,20 @@ util.inherits(Market, EventEmitter);
 
 
 Market.prototype.buyFromSeller = function(pays, gets) {
-    createOffer(pays, gets);
+    this.createOffer(pays, gets);
 }
 
 Market.prototype.sellToBuyer = function(pays, gets) {
-    createOffer(pays, gets);
+    this.createOffer(pays, gets);
 }
 
 Market.prototype.createOffer = function createOffer(pays, gets) {
-    console.log('createOffer' + pays);
-    console.log('createOffer' + gets);
-    // remote.transaction()
+    this.log(true, pays, gets);
+    // this._remote.transaction()
     //     .offerCreate(account, pays, gets)
     //     .secret(secret)
     //     .submit();
 }
-
-Market.prototype.addMarketName = function(name) {
-    this._markets.push(name);
-    this.on(name + '-buy-price-change', this.whenBuyPriceChange);
-    this.on(name + '-sell-price-change', this.whenSellPriceChange);
-    this.emit(name + '-buy-price-change', {
-        _priceIBuy: '0.027',
-        _priceISell: '0.030'
-    })
-};
 
 Market.prototype.addMarket = function(market) {
     market.on(market._name + '-buy-price-change', this.whenBuyPriceChange);
@@ -108,44 +126,52 @@ Market.prototype.addMarket = function(market) {
 };
 
 Market.prototype.whenBuyPriceChange = function(market) {
-    console.log('_priceISell: ' + this._priceISell + ' _priceIBuy: ' + market._priceIBuy);
     if (this._priceISell > market._priceIBuy) {
-        var totalIGetForBuy = _max([this._amountISell, market._amountIBuy, maxAmountAllowed]);
+        var totalIGetForBuy = _.min([this._amountISell, market._amountIBuy, maxAmountAllowed]);
         var totalIPayForBuy = {
+            name: market._name,
             issuer: market._issuer,
             currency: market._currency,
-            value: market._priceIBuy * totalIGetForBuy
+            value: (market._priceIBuy * totalIGetForBuy) / drops
         }
-        buyFromSeller(totalIPayForBuy, totalIGetForBuy);
 
-        var totalIPayForSell = totalIPayForBuy.value / _priceISell;
+        this.buyFromSeller(totalIPayForBuy, totalIGetForBuy);
+
+        var totalIPayForSell = (totalIPayForBuy.value / this._priceISell) * drops;
         var totalIGetForSell = {
             issuer: this._issuer,
             currency: this._currency,
             value: totalIPayForBuy.value
         }
-        sellToBuyer(totalIPayForSell, totalIGetForSell);
+        this.sellToBuyer(totalIPayForSell, totalIGetForSell);
+
+        this.log(true, totalIPayForBuy, totalIGetForBuy, totalIPayForSell, totalIGetForSell);
+
     }
 }
 
 Market.prototype.whenSellPriceChange = function(market) {
-    console.log('_priceISell' + this._priceIBuy + ' _priceIBuy' + market._priceISell);
     if (this._priceIBuy < market._priceISell) {
-        var totalIGetForBuy = _max([this._amountIBuy, market._amountISell, maxAmountAllowed]);
+        var totalIGetForBuy = _.min([this._amountIBuy, market._amountISell, maxAmountAllowed]);
         var totalIPayForBuy = {
+            name: this._name,
             issuer: this._issuer,
             currency: this._currency,
-            value: this._priceIBuy * totalIGetForBuy
+            value: (this._priceIBuy * totalIGetForBuy) / drops
         }
-        buyFromSeller(totalIPayForBuy, totalIGetForBuy);
 
-        var totalIPayForSell = totalIPayForBuy.value / market._priceISell;
+        this.buyFromSeller(totalIPayForBuy, totalIGetForBuy);
+
+        var totalIPayForSell = (totalIPayForBuy.value / market._priceISell) * drops;
         var totalIGetForSell = {
             issuer: market._issuer,
             currency: market._currency,
             value: totalIPayForBuy.value
         }
-        sellToBuyer(totalIPayForSell, totalIGetForSell);
+        this.sellToBuyer(totalIPayForSell, totalIGetForSell);
+
+        this.log(true, totalIPayForBuy, totalIGetForBuy, totalIPayForSell, totalIGetForSell);
+
     }
 }
 
@@ -154,5 +180,18 @@ Market.prototype.removeMarket = function(name) {
     this.removeListener(name + '-buy-price-change', this.whenBuyPriceChange);
     this.removeListener(name + '-sell-price-change', this.whenSellPriceChange);
 }
+
+Market.prototype.log = function() {
+    var arguNum = arguments.length;
+    if (arguNum == 0) {
+        return;
+    }
+    if (arguments[0]) { //check if we want to log something, this value is boolean type.
+        for (var i = 1; i < arguNum; i = i + 1) {
+            console.dir(arguments[i]);
+        }
+    }
+}
+
 
 exports.Market = Market;
