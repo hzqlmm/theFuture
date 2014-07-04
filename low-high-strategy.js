@@ -6,8 +6,8 @@ var Logger = require('./the-future-logger.js').TFLogger;
 
 var account = config.account;
 var secret = config.secret;
+var drops = config.drops;
 
-var drops = 1000000;
 var maxAmountAllowed = 10;
 
 function Strategy(remote) {
@@ -21,7 +21,7 @@ function Strategy(remote) {
     this._sequences = [];
     this._offers = [];
     this._profitRatioIGive = 1 / 100000;
-    this._profitRatioIWant = 1 / 500;
+    this._profitRatioIWant = 0;
 
     this.getOffers();
 }
@@ -39,44 +39,51 @@ Strategy.prototype.getOffers = function() {
 Strategy.prototype.createOffer = function createOffer(pays, gets) {
     var self = this;
 
-    if (typeof pays == 'obeject') {
-        var offers = _.filter(self._offers, function(offer) {
+    self._remote.requestAccountOffers(account, function() {
+        var offers = arguments[1].offers;
+        if (self.ifAlreadyCreateBid(offers, pays)) {
+            return;
+        }
+        if (self.ifAlreadyCreateAsk(offers, gets)) {
+            return;
+        }
+        Logger.log(true, "we make a deal here:", pays, gets);
+
+        self._remote.transaction()
+            .offerCreate(account, pays, gets)
+            .secret(secret).submit();
+    });
+}
+
+Strategy.prototype.ifAlreadyCreateBid = function(offers, pays) {
+    var self = this;
+    if (typeof pays == 'object' && offers.length > 0) {
+        var offers = _.filter(offers, function(offer) {
             return offer.taker_pays.currency == pays.currency && offer.taker_pays.issuer == pays.issuer;
         });
 
-        config.log(true, 'offers check here:', offers);
-        if (offers != undefined) {
-            return;
+        if (offers.length > 0) {
+            return true;
         }
-
-        self._offers.push({
-            taker_pays: pays
-        });
-
     }
 
-    if (typeof gets == 'obeject') {
-        var offers = _.filter(self._offers, function(offer) {
+    return false;
+}
+
+Strategy.prototype.ifAlreadyCreateAsk = function(offers, gets) {
+    var self = this;
+    if (typeof gets == 'object' && offers.length > 0) {
+
+        var offers = _.filter(offers, function(offer) {
             return offer.taker_gets.currency == gets.currency && offer.taker_gets.issuer == gets.issuer;
         });
 
-        config.log(true, 'offers check here:', offers);
-        if (offers != undefined) {
-            return;
+        if (offers.length > 0) {
+            return true;
         }
-
-        self._offers.push({
-            taker_gets: gets
-        });
     }
 
-    Logger.log(true, "we make a deal here:", pays, gets);
-
-    self._remote.transaction()
-        .offerCreate(account, pays, gets)
-        .secret(secret).once("success", function(data) {
-            self.getOffers();
-        }).submit();
+    return false;
 }
 
 Strategy.prototype.whenBuyPriceChange = function(market) {
@@ -97,7 +104,7 @@ Strategy.prototype.makeADealIfReachProfitRatio = function() {
     var sellMarket = _.min(this._sellMarkets, function(item) {
         return item._highestPrice;
     });
-    Logger.log(true, 'buyMarkets:', this._buyMarkets, 'sellMarket:', this._sellMarkets);
+    Logger.log(false, 'buyMarkets:', this._buyMarkets, 'sellMarket:', this._sellMarkets);
 
     var profitIGive;
     if (buyMarket._lowestPrice - sellMarket._highestPrice > this._profitRatioIWant * sellMarket._highestPrice) {
@@ -106,7 +113,7 @@ Strategy.prototype.makeADealIfReachProfitRatio = function() {
         profitIGive = buyMarket._lowestPrice * this._profitRatioIGive;
         var totalIPayForBuy = {
             'currency': buyMarket._currency,
-            'value': (buyMarket._lowestPrice - profitIGive) * totalIGetForBuy / drops + '',
+            'value': (buyMarket._lowestPrice - profitIGive) * totalIGetForBuy / drops + '', //even value should be string type
             'issuer': buyMarket._issuer
         }
 
@@ -122,8 +129,6 @@ Strategy.prototype.makeADealIfReachProfitRatio = function() {
         }
 
         this.createOffer(totalIPayForSell, totalIGetForSell);
-
-
 
         Logger.log(false, totalIPayForBuy, totalIGetForBuy, totalIPayForSell, totalIGetForSell);
     }
