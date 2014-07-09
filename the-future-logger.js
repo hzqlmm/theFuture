@@ -1,53 +1,31 @@
 require('./date-extend.js');
 var bunyan = require('bunyan');
-var server_options = {};
-var db_options = {
-    w: -1
-};
-
-var mongodb = require("mongodb");
-var mongoserver = new mongodb.Server('localhost', 27017, server_options);
-var db = new mongodb.Db('test', mongoserver, db_options);
-
-Logger.prototype.getNextSequence = function(name) {
-    var ret = db.collection('counters').findAndModify({
-        query: {
-            _id: name
-        },
-        update: {
-            $inc: {
-                seq: 1
-            }
-        },
-        new: true
-    }, function(err, result) {
-        db.close();
-    });
-
-    return ret.seq;
-}
+var mongoManager = require('./mongodb-manager.js');
 
 function Logger() {
     this.logger;
     this.getNewLog();
-    setInternal(this.getNewLog, 86400000); //we will get new log each day.
+    setInterval(this.getNewLog, 86400000); //we will get new log each day.
 };
 
 Logger.prototype.getNewLog = function() {
     var self = this;
 
-    var logId = getNextSequence('logId');
-    var date = new Date().format('MM-dd-yyyy');
-
+    var date = new Date().format('yyyy-MM-dd-hh-mm-ss.S');
     self.logger = bunyan.createLogger({
         name: 'theFuture',
         streams: [{
             level: 'info',
-            path: './log/ripple-info-' + logId + date + '.js'
+            path: './log/ripple-info-' + date + '.js'
         }, {
             level: 'error',
-            path: './log/ripple-error' + logId + date + '.js' // log ERROR and above to a file
+            path: './log/ripple-error' + date + '.js' // log ERROR and above to a file
         }]
+    });
+    process.on('uncaughtException', function(err) {
+        process.removeListener('uncaughtException', arguments.callee);
+        self.logger.error(err);
+        process.exit(1);
     });
 }
 
@@ -59,22 +37,11 @@ Logger.prototype.log = function() {
     }
     if (arguments[0]) { //check if we want to log something, this value is boolean type.
         delete arguments[0];
-        logger.info(arguments);
+
+        var date = new Date().format('yyyy-MM-dd-hh-mm-ss-S');
+        arguments.time = date;
+        self.logger.info(arguments);
     }
 };
-
-Logger.prototype.getLogId = function() {
-
-}
-
-
-
-process.on('uncaughtException', function(err) {
-    // prevent infinite recursion
-    process.removeListener('uncaughtException', arguments.callee);
-
-    // bonus: log the exception
-    logger.error(err);
-});
 
 exports.TFLogger = new Logger();
